@@ -6,7 +6,9 @@ from dataset_store import Dataset
 from transformation_util2 import RT2Transmat,ENUTransformer,Transmat2RT
 from scipy.spatial.transform import Rotation as R
 from tsmap2 import TSMap, GNSSTransformer
-
+from quaternion import Quaternion
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 class PoseExtractor(object):
     def __init__(self,bag_name, topic,ts_begin, ts_end, out_path):
@@ -14,6 +16,7 @@ class PoseExtractor(object):
         self.topic = topic
         self.ts_begin = ts_begin
         self.ts_end = ts_end
+        self.path = list()
 
         #open dataset
         try:
@@ -56,9 +59,7 @@ class PoseExtractor(object):
             raise Exception(e)
         return map_base 
 
-
 class CamPoseExtractor(PoseExtractor):
-
     def __init__(self, bag_name,topic,ts_begin, ts_end, out_path):
         super(CamPoseExtractor,self).__init__(bag_name, topic,ts_begin, ts_end, out_path)
     
@@ -69,6 +70,7 @@ class CamPoseExtractor(PoseExtractor):
                 time_stamp = msg.header.stamp.to_nsec()/1e9
                 transf_q = self._campose_to_quat(msg)
                 pose = [time_stamp]+transf_q
+                self.path.append(transf_q[:3])
                 f.write(
                 str(pose[0]) + ', ' +
                 str(pose[1]) + ', ' +
@@ -82,12 +84,14 @@ class CamPoseExtractor(PoseExtractor):
     def _campose_to_quat(self,cam_pose):
         enu2cam = np.array(cam_pose.mat_enu2cam).reshape(4, 4)
         cam2enu = np.linalg.inv(enu2cam)
-
+        r,t= Transmat2RT(cam2enu) 
+        # print("cam:",[t,r])
         #compose RT from matrix
-        r,t = Transmat2RT(cam2enu)
-        rot = R.from_euler('xyz',np.asarray(r))
-        q = rot.as_quat()
-        transf_q = list(t)+(list(q))
+        # r,t = Transmat2RT(cam2enu)
+        q = Quaternion.from_rotation_matrix(cam2enu)
+        # rot = R.from_euler('xyz',np.asarray(r))
+        # q = rot.as_quat()
+        transf_q = list(t)+[q.x,q.y,q.z,q.w]
         return transf_q
 
 
@@ -108,6 +112,8 @@ class IMUPoseExtractor(PoseExtractor):
                 enu = self.gps2enu(msg)
                 transf_q = self.rotation_to_quaternion(enu)
                 pose = [time_stamp] + transf_q
+                print("imu: ",pose)
+                self.path.append(transf_q[:3])
                 f.write(
                     str(pose[0]) + ', ' +
                     str(pose[1]) + ', ' +
@@ -118,6 +124,8 @@ class IMUPoseExtractor(PoseExtractor):
                     str(pose[6]) + ', ' +
                     str(pose[7]) + '\n'
                 )
+        
+        
 
     def gps2enu(self, gps):
         try:
@@ -134,7 +142,9 @@ class IMUPoseExtractor(PoseExtractor):
         roll, pitch = np.deg2rad(gps.roll), np.deg2rad(gps.pitch)
         yaw = self._convert_azimuth_to_yaw(gps_position, gps.azimuth)
         enu_pose = [[x, y, z], [roll, pitch, yaw]]
-        return enu_pose
+        enu_mat = RT2Transmat(enu_pose[1],enu_pose[0])
+        # print ("imu: ",enu_mat)
+        return enu_mat
 
     def _convert_azimuth_to_yaw(self, gps_position, azimuth, correction=False):
         """
@@ -162,18 +172,20 @@ class IMUPoseExtractor(PoseExtractor):
         """
         convert enu_pose to [x, y, z, q_x, q_y, q_z, q_w]
         """
-        rot = R.from_euler('xyz',np.asarray(enu_pose[1]))
-        q = rot.as_quat()
-        trans_q = list(enu_pose[0])+(list(q))
+        q= Quaternion.from_rotation_matrix(enu_pose)
+        # rot = R.from_euler('xyz',np.asarray(enu_pose[1]))
+        # q = rot.as_quat()
+        trans_q = list(enu_pose[:3,3])+[q.x,q.y,q.z,q.w]
         return trans_q
 
 
 
 if __name__ == "__main__":
-    bag_name = "2019-12-24-16-00-08"
+    bag_name = "2020-01-10-10-52-55"
     topics= ["/lps_cam_pose/camera1","/novatel_data/inspvax"]
-    ts_begin = "00:00:00"
-    ts_end = "00:20:00"
+    ts_begin = "00:02:19"
+    # ts_end = 1577412002.6*1e9
+    ts_end = "00:06:21"
     out_path = "../../"
     for topic in topics:
         if "lps_cam_pos" in topic:
@@ -182,6 +194,25 @@ if __name__ == "__main__":
         if "inspvax" in topic:
             imu_pose_extractor = IMUPoseExtractor(bag_name,topic,ts_begin,ts_end,out_path)
             imu_pose_extractor.process()
+    
+    #plot
+    fig = plt.figure()
+    ax = plt.axes(projection='3d')
+    
+    x= np.array(cam_pose_extractor.path)[:,0]
+    y= np.array(cam_pose_extractor.path)[:,1]
+    z= np.array(cam_pose_extractor.path)[:,2]
+    ax.plot3D(x,y,z,'red')
+
+    i_x = np.array(imu_pose_extractor.path)[:,0]
+    i_y = np.array(imu_pose_extractor.path)[:,1]
+    i_z = np.array(imu_pose_extractor.path)[:,2]
+
+    ax.plot3D(i_x,i_y,i_z)
+    plt.show()
+    
+    
+    
     #fetch campose
 
     
